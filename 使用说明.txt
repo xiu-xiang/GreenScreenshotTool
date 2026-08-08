@@ -1,0 +1,46 @@
+便携截图工具 - 使用说明
+========================
+
+【推荐】绿色免环境版本请使用：d:\Test\ShotPortable\
+  默认离线本机，模型随包，Win10+ 免安装 Python/Docker
+  发布：ShotPortable\scripts\build_portable.ps1
+  说明：ShotPortable\使用说明.txt
+
+以下为旧版 C# 工具说明（依赖本机 LibreTranslate 时需额外服务）：
+
+一、功能
+1. 自由拖拽框选截图（类似微信）
+2. 标注：矩形、椭圆、箭头、画笔、文字、马赛克
+3. 保存 / 复制截图
+4. OCR 提取文字（开源 PaddleOCR，中文友好，模型随程序嵌入 inference/）
+5. 中英对照翻译（原文行 + 译文行交替显示）
+6. 提取/翻译结果直接显示在编辑器右侧栏，经通信通道回传，不再新开窗口
+
+二、快捷方式
+- 启动后驻留托盘
+- 全局热键：默认 Ctrl + Alt + A（可在托盘菜单「设置」中自定义）
+- 编辑器：Ctrl+S 保存，Ctrl+C 复制图片，Ctrl+Z 撤销，Esc 关闭
+- 结果侧栏：鼠标划选文本后 Ctrl+C / 右键复制选中内容
+- 框选时：Esc / 右键 取消
+
+三、OCR 模型说明
+编译/发布后会自动带上 PaddleOCR 开源中英模型（inference 目录），无需额外下载。
+首次点击「提取文字」时会加载模型，可能稍慢，之后会复用引擎。
+
+四、翻译说明（默认本地 127）
+- 默认：主机 127.0.0.1，端口 5000（可在设置中单独改端口）
+- 托盘「设置」可改主机、端口、本地开关、在线降级，并一键检测
+- 5000 被占用时：把端口改为 5001 等，并启动服务时使用相同端口
+- 配置保存在程序目录 settings.json
+- 启动示例：
+  libretranslate --host 127.0.0.1 --port 5001
+  docker run -p 5001:5000 libretranslate/libretranslate
+
+五、绿色便携发布
+  .\scripts\publish-portable.ps1
+输出目录：dist\ScreenshotTool-Portable\
+将整个文件夹拷贝即可使用（建议先下载 OCR 模型再打包）。
+
+六、开发调试
+  cd ScreenshotTool
+  dotnet run

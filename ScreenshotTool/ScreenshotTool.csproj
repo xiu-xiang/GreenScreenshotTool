@@ -1,0 +1,40 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>ScreenshotTool</AssemblyName>
+    <RootNamespace>ScreenshotTool</RootNamespace>
+    <Version>1.0.0</Version>
+    <Description>便携截图工具 - 标注 / OCR / 中英对照翻译</Description>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <!-- 可执行文件与任务栏图标 -->
+    <ApplicationIcon>Resources\app.ico</ApplicationIcon>
+    <!-- PaddleOCR 仅支持 x64 -->
+    <PlatformTarget>x64</PlatformTarget>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 运行时托盘/窗体加载同一图标 -->
+    <Content Include="Resources\app.ico" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 开源中文友好 OCR：PaddleOCR（模型随包复制到 inference/） -->
+    <PackageReference Include="PaddleOCRSharp" Version="6.2.0" />
+    <!-- 必须直接引用，否则原生 DLL（paddle_inference 等）不会复制到输出目录 -->
+    <PackageReference Include="Paddle.Runtime.win_x64" Version="3.3.0.1" />
+    <!-- 开源多引擎翻译客户端（可对接本地 LibreTranslate） -->
+    <PackageReference Include="GTranslate" Version="2.3.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 将配置等目录复制到输出，便于绿色部署 -->
+    <None Include="models\**\*" CopyToOutputDirectory="PreserveNewest" Link="models\%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,8 @@
+{
+  "libreTranslateHost": "127.0.0.1",
+  "libreTranslatePort": 5000,
+  "libreTranslateUrl": "http://127.0.0.1:5000",
+  "useLocalTranslate": true,
+  "allowOnlineFallback": false,
+  "comment": "端口可在托盘「设置」中单独调整；例如 5000 被占用可改为 5001。"
+}
