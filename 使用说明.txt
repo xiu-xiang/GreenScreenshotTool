@@ -1,0 +1,30 @@
+绿色便携截图工具（ShotPortable）
+================================
+
+一、目标
+- Win10 及以上 x64，免安装 Python / Docker / 其它运行时
+- 打开即用：默认离线本机（OCR + 中英翻译模型随包）
+- 可在编辑器勾选「本次使用联网翻译」；下次启动仍恢复离线
+
+二、功能
+1. 托盘常驻，热键 Ctrl+Alt+A 框选截图
+2. 标注：矩形/椭圆/箭头/画笔/文字/马赛克
+3. 保存 / 复制图片
+4. 离线 OCR 提取文字（RapidOCR）
+5. 离线对照翻译（Argos en↔zh），结果在右侧栏，可划选复制
+
+三、开发运行
+  py -3.11 -m venv .venv
+  .\.venv\Scripts\pip install -r requirements.txt
+  .\.venv\Scripts\python.exe scripts\download_models.py
+  .\.venv\Scripts\python.exe run.py
+
+四、绿色发布
+  .\scripts\build_portable.ps1
+  输出：dist\ShotPortable-Green\
+  把整个文件夹拷贝到目标电脑，运行 ShotPortable.exe
+
+五、说明
+- OCR 模型：随 rapidocr-onnxruntime 打包
+- 翻译模型：models\argos\*.argosmodel + models\argos_installed\
+- 联网翻译依赖外网，仅在勾选后启用
