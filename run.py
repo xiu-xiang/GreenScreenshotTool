@@ -5,6 +5,12 @@ import os
 os.environ.setdefault("ARGOS_CHUNK_TYPE", "MINISBD")
 os.environ.setdefault("ARGOS_STANZA_AVAILABLE", "0")
 
+# 尽早注入空壳，防止缺 stanza 直接失败
+from app.translate_service import _install_offline_stubs, setup_offline_env
+
+_install_offline_stubs()
+setup_offline_env()
+
 from app.main import run
 
 if __name__ == "__main__":

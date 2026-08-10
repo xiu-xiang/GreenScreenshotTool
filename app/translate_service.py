@@ -71,6 +71,75 @@ def _split_sentences_offline(text: str) -> List[str]:
     return chunks or [text]
 
 
+def _install_offline_stubs() -> None:
+    """在导入 Argos 前注入空壳模块，避免绿色包缺 stanza/minisbd 直接崩。"""
+    import sys
+    import types
+    from pathlib import Path
+
+    # 优先把 stub 目录插入 path（打包后位于 _internal）
+    candidates = []
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(Path(meipass))
+        candidates.append(Path(sys.executable).resolve().parent / "_internal")
+    else:
+        root = Path(__file__).resolve().parent.parent
+        candidates.append(root / "scripts" / "stanza_stub")
+        # minisbd stub 是包文件形式：scripts/minisbd_stub/minisbd.py
+        candidates.append(root / "scripts" / "minisbd_stub")
+
+    for c in candidates:
+        s = str(c)
+        if c.exists() and s not in sys.path:
+            sys.path.insert(0, s)
+
+    if "stanza" not in sys.modules:
+        try:
+            import stanza  # noqa: F401  # 可能来自 stub 目录
+        except Exception:
+            stub = types.ModuleType("stanza")
+
+            class _Pipeline:
+                def __init__(self, *a, **k):
+                    pass
+
+                def __call__(self, text):
+                    from types import SimpleNamespace
+
+                    return SimpleNamespace(sentences=[SimpleNamespace(text=text or "")])
+
+            stub.Pipeline = _Pipeline
+            stub.download = lambda *a, **k: None
+            sys.modules["stanza"] = stub
+
+    if "minisbd" not in sys.modules:
+        try:
+            import minisbd  # noqa: F401
+        except Exception:
+            # 极简占位，防止 import 失败
+            m = types.ModuleType("minisbd")
+
+            class SBDetect:
+                def __init__(self, *a, **k):
+                    pass
+
+                def sentences(self, text):
+                    return [text] if text else [""]
+
+            class models:
+                cache_dir = ""
+
+                @staticmethod
+                def list_models():
+                    return []
+
+            m.SBDetect = SBDetect
+            m.models = models
+            sys.modules["minisbd"] = m
+
+
 def _patch_offline_sbd() -> None:
     """猴子补丁：让 Argos 分句永不触发网络下载 / 重模型加载。"""
     global _sbd_patched
@@ -78,6 +147,8 @@ def _patch_offline_sbd() -> None:
         return
     try:
         import argostranslate.sbd as sbd
+        import argostranslate.translate as translate
+        import argostranslate.settings as settings
 
         def _split(self, text: str) -> List[str]:
             return _split_sentences_offline(text)
@@ -95,6 +166,24 @@ def _patch_offline_sbd() -> None:
                     cls.lazy_detector = lambda self: None  # type: ignore
                 if hasattr(cls, "lazy_pipeline"):
                     cls.lazy_pipeline = lambda self: None  # type: ignore
+
+        # 强制 PackageTranslation 使用离线分句器
+        offline_cls = getattr(sbd, "OfflineSentencizer", None) or getattr(sbd, "MiniSBDSentencizer", None)
+        if offline_cls is not None and hasattr(translate, "PackageTranslation"):
+            _orig_init = translate.PackageTranslation.__init__
+
+            def _init(self, from_lang, to_lang, pkg):
+                self.from_lang = from_lang
+                self.to_lang = to_lang
+                self.pkg = pkg
+                self.translator = None
+                self.sentencizer = offline_cls(pkg)
+
+            translate.PackageTranslation.__init__ = _init  # type: ignore
+
+        if hasattr(settings, "ChunkType"):
+            settings.chunk_type = settings.ChunkType.MINISBD
+        settings.stanza_available = False
         _sbd_patched = True
     except Exception:
         pass
@@ -109,6 +198,9 @@ def setup_offline_env() -> None:
         socket.setdefaulttimeout(5)
     except Exception:
         pass
+
+    # 必须在 import argostranslate 之前注入 stub
+    _install_offline_stubs()
 
     root = models_dir()
     installed = root / "argos_installed"

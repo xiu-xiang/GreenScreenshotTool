@@ -51,7 +51,7 @@ if (Test-Path $Out) { Remove-Item $Out -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 Copy-Item (Join-Path $built "*") $Out -Recurse -Force
 
-# 关键：只发布已安装模型，不带 .argosmodel / cache（体积更小）
+# 发布已安装模型，不带 .argosmodel / cache（体积更小）
 $modelsSrcInstalled = Join-Path $Root "models\argos_installed"
 if (-not (Test-Path $modelsSrcInstalled) -or -not (Get-ChildItem $modelsSrcInstalled -Directory -ErrorAction SilentlyContinue)) {
     Write-Host "models/argos_installed missing. Run download_models.py first." -ForegroundColor Red
@@ -100,12 +100,65 @@ function Remove-PublishBloat([string]$targetRoot) {
 
 Write-Host "[4/4] Patch offline runtime + strip bloat..." -ForegroundColor Cyan
 $sbdSrc = Join-Path $PSScriptRoot "argos_sbd_offline.py"
+$stanzaStub = Join-Path $PSScriptRoot "stanza_stub\__init__.py"
+$minisbdStub = Join-Path $PSScriptRoot "minisbd_stub\minisbd.py"
+
+function Install-OfflineStubs([string]$targetRoot) {
+    # 必须在 Remove-PublishBloat 之后安装，否则空壳会被当成 bloat 删掉
+    if (Test-Path $stanzaStub) {
+        $stanzaDir = Join-Path $targetRoot "_internal\stanza"
+        New-Item -ItemType Directory -Force -Path $stanzaDir | Out-Null
+        Copy-Item $stanzaStub (Join-Path $stanzaDir "__init__.py") -Force
+        Write-Host ("installed stanza stub -> {0}" -f $stanzaDir) -ForegroundColor Green
+    }
+    if (Test-Path $minisbdStub) {
+        $dst = Join-Path $targetRoot "_internal\minisbd.py"
+        Copy-Item $minisbdStub $dst -Force
+        Write-Host ("installed minisbd stub -> {0}" -f $dst) -ForegroundColor Green
+    }
+}
+
 foreach ($targetRoot in @($Out, $built)) {
     $sbdDst = Join-Path $targetRoot "_internal\argostranslate\sbd.py"
     if (Test-Path (Split-Path $sbdDst -Parent)) {
         Copy-Item $sbdSrc $sbdDst -Force
         Write-Host ("patched offline sbd -> {0}" -f $sbdDst) -ForegroundColor Green
     }
+
+    # 强制 PackageTranslation 使用 OfflineSentencizer
+    $tr = Join-Path $targetRoot "_internal\argostranslate\translate.py"
+    if (Test-Path $tr) {
+        $txt = Get-Content $tr -Raw -Encoding UTF8
+        if ($txt -notmatch "OfflineSentencizer\(pkg\)") {
+            $txt = $txt -replace 'from argostranslate\.sbd import SpacySentencizerSmall, StanzaSentencizer, MiniSBDSentencizer',
+                'from argostranslate.sbd import OfflineSentencizer, SpacySentencizerSmall, StanzaSentencizer, MiniSBDSentencizer'
+            if ($txt.Contains('Sentencizer = StanzaSentencizer')) {
+                # 宽松替换：整段 Sentencizer 选择改为离线分句
+                $txt2 = [regex]::Replace(
+                    $txt,
+                    '(?s)Sentencizer = None.*?raise NotImplementedError\(\)',
+                    "# 绿色包热补丁：一律离线分句，禁止 Stanza`r`n        self.sentencizer = OfflineSentencizer(pkg)"
+                )
+                Set-Content -Path $tr -Value $txt2 -Encoding UTF8
+                Write-Host ("patched translate offline sentencizer -> {0}" -f $tr) -ForegroundColor Green
+            }
+        }
+    }
+
+    # settings：默认 MINISBD；上游把 stanza_available 误写进 docstring，需在外部真正赋值
+    $st = Join-Path $targetRoot "_internal\argostranslate\settings.py"
+    if (Test-Path $st) {
+        $stxt = Get-Content $st -Raw -Encoding UTF8
+        $stxt = $stxt -replace 'get_setting\("ARGOS_CHUNK_TYPE", default="DEFAULT"\)', 'get_setting("ARGOS_CHUNK_TYPE", default="MINISBD")'
+        $stxt = $stxt -replace 'chunk_type = ChunkType\.ARGOSTRANSLATE', 'chunk_type = ChunkType.MINISBD'
+        # 去掉重复插入，再在 docstring 结束后写入真实赋值
+        $stxt = [regex]::Replace($stxt, '(?m)^# 绿色包：在 docstring 外真正赋值.*\r?\nstanza_available = False\r?\n', '')
+        $stxt = $stxt -replace '(?s)("""\s*\r?\n)(# Supported values: "cpu" and "cuda")',
+            "`$1# 绿色包：在 docstring 外真正赋值（上游误写在字符串内）`r`nstanza_available = False`r`n`$2"
+        Set-Content -Path $st -Value $stxt -Encoding UTF8
+        Write-Host ("patched settings offline -> {0}" -f $st) -ForegroundColor Green
+    }
+
     $spec = Join-Path $targetRoot "_internal\ctranslate2\specs\model_spec.py"
     if (Test-Path $spec) {
         $txt = Get-Content $spec -Raw -Encoding UTF8
@@ -131,7 +184,17 @@ torch = None
             Write-Host ("patched no-torch ctranslate2 -> {0}" -f $spec) -ForegroundColor Green
         }
     }
+
+    # 先清 bloat，再装 stub（避免 stub 被当成 stanza 删掉）
     Remove-PublishBloat $targetRoot
+    Install-OfflineStubs $targetRoot
+
+    # 清掉旧字节码，避免加载未补丁的 .pyc
+    $cache = Join-Path $targetRoot "_internal\argostranslate\__pycache__"
+    if (Test-Path $cache) {
+        Remove-Item $cache -Recurse -Force
+        Write-Host ("cleared pycache -> {0}" -f $cache) -ForegroundColor DarkYellow
+    }
 }
 
 $readme = Join-Path $Root "使用说明.txt"
