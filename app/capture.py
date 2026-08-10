@@ -603,11 +603,15 @@ class CaptureOverlay(QWidget):
         return super().eventFilter(obj, event)
 
     def _place_bar(self):
+        """工具条相对选区右对齐，向左延伸，避免挡住选区右侧内容。"""
         self.bar.adjustSize()
         bw, bh = self.bar.width(), self.bar.height()
         gap = 8
-        x = self._sel.left()
+        # 右缘对齐选区右缘；工具条比选区宽时向左伸出
+        x = self._sel.right() - bw + 1
         y = self._sel.bottom() + gap
+        if x < 4:
+            x = 4
         if x + bw > self.width() - 4:
             x = max(4, self.width() - bw - 4)
         if y + bh > self.height() - 4:
