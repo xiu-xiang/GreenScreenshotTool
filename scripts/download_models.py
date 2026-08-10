@@ -48,10 +48,19 @@ def main():
 
     langs = translate.get_installed_languages()
     print("已安装语言:", [f"{l.code}:{l.name}" for l in langs])
-    # 冒烟
-    sample = translate.translate("Hello world", "en", "zh")
-    print("冒烟翻译 Hello world ->", sample)
-    print("完成。发布时请把整个 models 目录一并打包。")
+    codes = {l.code for l in langs}
+    if "en" not in codes or "zh" not in codes:
+        raise SystemExit("安装后仍缺少 en/zh 语言包")
+    # 冒烟翻译（stanza 首次可能需联网；失败不阻断模型落盘）
+    try:
+        sample = translate.translate("Hello world", "en", "zh")
+        print("冒烟翻译 Hello world ->", sample)
+    except Exception as ex:
+        print("冒烟翻译跳过（不影响模型文件）:", ex)
+    print("完成。发布时请把整个 models 目录拷到 exe 同级。")
+    print("  目标结构: ShotPortable.exe")
+    print("            models/argos/*.argosmodel")
+    print("            models/argos_installed/...")
 
 
 if __name__ == "__main__":

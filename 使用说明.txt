@@ -12,19 +12,40 @@
 3. 保存 / 复制图片
 4. 离线 OCR 提取文字（RapidOCR）
 5. 离线对照翻译（Argos en↔zh），结果在右侧栏，可划选复制
+6. 启动后后台预加载翻译模型：
+   - 托盘提示「正在加载 / 已就绪」
+   - 编辑器右侧栏显示加载进度
+   - 模型未就绪时点「对照翻译」会等待加载完成后自动开始
 
 三、开发运行
   py -3.11 -m venv .venv
   .\.venv\Scripts\pip install -r requirements.txt
   .\.venv\Scripts\python.exe scripts\download_models.py
   .\.venv\Scripts\python.exe run.py
+  （或双击 启动开发版.bat）
 
 四、绿色发布
   .\scripts\build_portable.ps1
   输出：dist\ShotPortable-Green\
   把整个文件夹拷贝到目标电脑，运行 ShotPortable.exe
 
-五、说明
+  正确目录结构：
+    ShotPortable.exe
+    models\argos\*.argosmodel
+    models\argos_installed\...
+    _internal\...
+
+五、离线翻译与排障
 - OCR 模型：随 rapidocr-onnxruntime 打包
 - 翻译模型：models\argos\*.argosmodel + models\argos_installed\
 - 联网翻译依赖外网，仅在勾选后启用
+- 若对照翻译很慢或卡住：
+  1) 确认 models 与 exe 同级且完整
+  2) 等待托盘/右侧栏显示「模型已就绪」再翻译
+  3) 重新运行 scripts\build_portable.ps1 生成带热补丁的绿色包
+    （禁用 torch 导入 + 离线分句，避免首次翻译假死）
+- 若提示缺少模型：把开发机 models 整夹复制到 exe 旁
+
+六、仓库
+  https://github.com/xiu-xiang/GreenScreenshotTool
+  main = Python；csharp = C# 版

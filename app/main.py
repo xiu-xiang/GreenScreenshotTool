@@ -4,7 +4,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Signal, Qt
+from PySide6.QtCore import QObject, QThread, Signal, Qt
 from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon, QWidget
 
@@ -19,6 +19,26 @@ class HotkeyBridge(QObject):
     """把热键回调切回 Qt 主线程。"""
 
     triggered = Signal()
+
+
+class ModelHub(QObject):
+    """离线翻译模型加载状态总线（托盘 / 编辑器共用）。"""
+
+    progress = Signal(str)
+    ready = Signal(bool, str)  # ok, message
+
+
+class PreloadWorker(QThread):
+    """启动后后台预热离线翻译模型。"""
+
+    progress = Signal(str)
+    finished_ok = Signal(bool, str)
+
+    def run(self):
+        ok, msg = translate_service.preload_offline_models(
+            progress=lambda s: self.progress.emit(s),
+        )
+        self.finished_ok.emit(ok, msg)
 
 
 def _load_icon() -> QIcon:
@@ -49,11 +69,14 @@ class AppController(QObject):
         # 预先把离线翻译目录指到 models/argos
         translate_service.setup_offline_env()
 
+        self.model_hub = ModelHub()
+        self.app.setProperty("model_hub", self.model_hub)
+
         self.bridge = HotkeyBridge()
         self.bridge.triggered.connect(self.start_capture)
 
         self.tray = QSystemTrayIcon(_load_icon(), app)
-        self.tray.setToolTip(f"绿色截图工具（离线） 热键 {self.settings.hotkey}")
+        self.tray.setToolTip(f"绿色截图工具（离线） 热键 {self.settings.hotkey}\n模型：加载中…")
         menu = QMenu()
         act_cap = QAction(f"开始截图 ({self.settings.hotkey})", self)
         act_cap.triggered.connect(self.start_capture)
@@ -70,15 +93,38 @@ class AppController(QObject):
         self.tray.show()
         self.tray.showMessage(
             "绿色截图工具已启动",
-            f"默认离线本机运行。热键：{self.settings.hotkey}\n模型目录：{models_dir()}",
+            f"默认离线本机运行。热键：{self.settings.hotkey}\n正在后台加载翻译模型…",
             QSystemTrayIcon.MessageIcon.Information,
-            3000,
+            3500,
         )
 
         self._listener = None
         self._capturing = False
         self._editors = []
         self._start_hotkey()
+        self._start_model_preload()
+
+    def _start_model_preload(self):
+        """启动即后台加载模型，避免点对照翻译时才卡住。"""
+        self._preload = PreloadWorker()
+        self._preload.progress.connect(self._on_model_progress)
+        self._preload.finished_ok.connect(self._on_model_ready)
+        self._preload.start()
+
+    def _on_model_progress(self, msg: str):
+        self.tray.setToolTip(f"绿色截图工具（离线） 热键 {self.settings.hotkey}\n{msg}")
+        self.model_hub.progress.emit(msg)
+
+    def _on_model_ready(self, ok: bool, msg: str):
+        tip = msg if ok else f"模型加载失败：{msg}"
+        self.tray.setToolTip(f"绿色截图工具（离线） 热键 {self.settings.hotkey}\n{tip}")
+        self.model_hub.ready.emit(ok, msg)
+        self.tray.showMessage(
+            "离线翻译模型已就绪" if ok else "离线翻译模型加载失败",
+            tip,
+            QSystemTrayIcon.MessageIcon.Information if ok else QSystemTrayIcon.MessageIcon.Warning,
+            4000,
+        )
 
     def _tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
@@ -118,26 +164,29 @@ class AppController(QObject):
             img = select_region()
             if img is not None:
                 # 每次打开编辑器前刷新设置（保持会话内联网勾选）
-                win = EditorWindow(img, self.settings)
+                win = EditorWindow(img, self.settings, model_hub=self.model_hub)
                 win.show()
                 self._editors.append(win)
         finally:
             self._capturing = False
 
     def show_about(self):
-        ok, msg = translate_service.ensure_offline_packages()
+        ok = translate_service.is_model_ready()
+        msg = translate_service.get_model_status()
+        err = translate_service.get_model_error() or ""
         QMessageBox.information(
             None,
             "关于",
             "绿色便携截图工具 v1.0\n\n"
             "· 默认离线本机运行（OCR + 翻译模型随包）\n"
+            "· 启动后后台预加载翻译模型\n"
             "· 可在编辑器勾选「本次使用联网翻译」\n"
             "· 下次启动仍恢复离线\n"
             "· 支持 Win10+ x64，无需安装 Python/Docker\n\n"
             f"热键：{self.settings.hotkey}\n"
             f"模型：{models_dir()}\n"
-            f"离线翻译：{'就绪' if ok else '未就绪'}\n"
-            f"{msg if not ok else ''}",
+            f"离线翻译：{'就绪' if ok else '未就绪 / 加载中'}\n"
+            f"{msg}\n{err}",
         )
 
 

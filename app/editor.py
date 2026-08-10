@@ -87,7 +87,12 @@ class Worker(QThread):
                 )
                 return
 
-            self.status.emit("识别完成，开始对照翻译...")
+            if self.use_online:
+                self.status.emit("识别完成，开始联网对照翻译…")
+            elif translate_service.is_model_ready():
+                self.status.emit("识别完成，模型已就绪，开始对照翻译…")
+            else:
+                self.status.emit("识别完成，正在加载离线翻译模型…")
             lines = translate_service.translate_contrast(
                 ocr.lines,
                 use_online=self.use_online,
@@ -261,9 +266,10 @@ class Canvas(QWidget):
 
 
 class EditorWindow(QMainWindow):
-    def __init__(self, image: Image.Image, settings: AppSettings):
+    def __init__(self, image: Image.Image, settings: AppSettings, model_hub=None):
         super().__init__()
         self.settings = settings
+        self.model_hub = model_hub
         self.setWindowTitle("截图编辑 - 绿色便携版（默认离线）")
         self.resize(settings.window_width, settings.window_height)
 
@@ -310,13 +316,94 @@ class EditorWindow(QMainWindow):
 
         self._plain = ""
         self._worker: Optional[Worker] = None
+        self._act_translate: Optional[QAction] = None
+        self._pending_translate = False
         self._build_toolbar()
+        self._bind_model_hub()
+        self._refresh_model_panel()
+
+    def _bind_model_hub(self):
+        """订阅启动预加载进度，右侧栏实时提示。"""
+        if self.model_hub is None:
+            return
+        self.model_hub.progress.connect(self._on_model_progress)
+        self.model_hub.ready.connect(self._on_model_ready)
+
+    def _refresh_model_panel(self):
+        """根据当前模型状态刷新右侧提示与按钮。"""
+        online = self.chk_online.isChecked()
+        if online:
+            self.status.setText("联网翻译已开启（不依赖本地模型）")
+            if self._act_translate:
+                self._act_translate.setEnabled(True)
+            return
+
+        if translate_service.is_model_ready():
+            tip = translate_service.get_model_status()
+            self.status.setText(tip)
+            self.lbl_title.setText("结果 · 模型已就绪")
+            if self._act_translate:
+                self._act_translate.setEnabled(True)
+            # 仅在还没有业务结果时写提示
+            if not self._plain and not self.result.toPlainText().strip():
+                self.result.setTextColor(QColor("#4EC9B0"))
+                self.result.setPlainText("✓ 离线翻译模型已就绪\n\n截图标注后点击「对照翻译」即可。")
+            return
+
+        msg = translate_service.get_model_status() or "正在加载离线翻译模型…"
+        self.status.setText(msg)
+        self.lbl_title.setText("结果 · 模型加载中")
+        if self._act_translate:
+            # 允许点击：会排队等加载完成
+            self._act_translate.setEnabled(True)
+        if not self._plain:
+            self.result.setTextColor(QColor("#DCDCAA"))
+            self.result.setPlainText(
+                "⏳ 正在加载离线翻译模型…\n\n"
+                "启动后会在后台预热英↔中模型，完成后会提示「已就绪」。\n"
+                "加载完成前也可点「对照翻译」，会自动等待。\n\n"
+                f"当前：{msg}"
+            )
+
+    def _on_model_progress(self, msg: str):
+        if self.chk_online.isChecked():
+            return
+        self.status.setText(msg)
+        # 加载过程中持续刷新右侧说明
+        if not self._plain:
+            self.result.setTextColor(QColor("#DCDCAA"))
+            self.result.setPlainText(
+                "⏳ 正在加载离线翻译模型…\n\n"
+                "请稍候，加载完成后即可使用对照翻译。\n\n"
+                f"当前：{msg}"
+            )
+
+    def _on_model_ready(self, ok: bool, msg: str):
+        if self.chk_online.isChecked():
+            return
+        self._refresh_model_panel()
+        if ok:
+            self.status.setText("离线翻译模型已就绪，可以使用对照翻译")
+            if not self._plain:
+                self.result.setTextColor(QColor("#4EC9B0"))
+                self.result.setPlainText("✓ 离线翻译模型已就绪\n\n截图标注后点击「对照翻译」即可。")
+            # 若用户已点过对照翻译，自动继续
+            if self._pending_translate:
+                self._pending_translate = False
+                self._start_worker(True)
+        else:
+            self.status.setText(f"模型加载失败：{msg}")
+            if not self._plain:
+                self.result.setTextColor(QColor("#F44747"))
+                self.result.setPlainText(f"✗ 离线翻译模型加载失败\n\n{msg}")
+            self._pending_translate = False
 
     def _on_online_toggled(self, checked: bool):
         self.settings.use_online = bool(checked)
         save_settings(self.settings)
         mode = "联网" if self.settings.use_online else "离线本机"
         self.status.setText(f"已切换：{mode}（下次启动仍默认离线）")
+        self._refresh_model_panel()
 
     def _build_toolbar(self):
         tb = QToolBar()
@@ -346,11 +433,14 @@ class EditorWindow(QMainWindow):
             ("复制图片", self.copy_image),
             ("保存", self.save_image),
             ("提取文字", lambda: self.run_job(False)),
-            ("对照翻译", lambda: self.run_job(True)),
         ]:
             a = QAction(name, self)
             a.triggered.connect(slot)
             tb.addAction(a)
+        # 对照翻译单独保留引用，便于按模型状态提示
+        self._act_translate = QAction("对照翻译", self)
+        self._act_translate.triggered.connect(lambda: self.run_job(True))
+        tb.addAction(self._act_translate)
 
     def pick_color(self):
         c = QColorDialog.getColor(QColor(*self.canvas.color[:3]), self)
@@ -372,14 +462,54 @@ class EditorWindow(QMainWindow):
     def run_job(self, do_translate: bool):
         if self._worker and self._worker.isRunning():
             return
-        # 右侧展开显示
-        img = self.canvas.compose()
         use_online = self.chk_online.isChecked()
         self.settings.use_online = use_online
+
+        # 离线对照翻译：模型未就绪时先提示并排队等待
+        if do_translate and not use_online and not translate_service.is_model_ready():
+            self._pending_translate = True
+            msg = translate_service.get_model_status() or "正在加载离线翻译模型…"
+            self.status.setText(f"模型加载中，加载完成后自动开始翻译…（{msg}）")
+            self.result.setTextColor(QColor("#DCDCAA"))
+            self.result.setPlainText(
+                "⏳ 正在加载离线翻译模型…\n\n"
+                "加载完成后将自动开始对照翻译。\n\n"
+                f"当前：{msg}"
+            )
+            # 若当前没有后台加载（异常路径），主动触发一次
+            if not translate_service.is_model_loading():
+                self._kick_preload()
+            return
+
+        self._pending_translate = False
+        self._start_worker(do_translate)
+
+    def _kick_preload(self):
+        """编辑器内兜底触发预加载（启动预加载失败时）。"""
+        class _LocalPreload(QThread):
+            progress = Signal(str)
+            finished_ok = Signal(bool, str)
+
+            def run(self_inner):
+                ok, msg = translate_service.preload_offline_models(
+                    progress=lambda s: self_inner.progress.emit(s),
+                )
+                self_inner.finished_ok.emit(ok, msg)
+
+        self._local_preload = _LocalPreload()
+        self._local_preload.progress.connect(self._on_model_progress)
+        self._local_preload.finished_ok.connect(self._on_model_ready)
+        self._local_preload.start()
+
+    def _start_worker(self, do_translate: bool):
+        img = self.canvas.compose()
+        use_online = self.chk_online.isChecked()
         self._worker = Worker(img, do_translate, use_online)
         self._worker.status.connect(self.status.setText)
         self._worker.finished_ok.connect(self._on_done)
         self._worker.failed.connect(lambda e: QMessageBox.warning(self, "失败", e))
+        if do_translate and not use_online:
+            self.status.setText("离线翻译模型已就绪，开始对照翻译…")
         self._worker.start()
 
     def _on_done(self, title: str, payload: str, plain: str):
