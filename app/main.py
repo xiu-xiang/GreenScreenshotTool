@@ -9,7 +9,6 @@ from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon, QWidget
 
 from app.capture import select_region
-from app.editor import EditorWindow
 from app.paths import app_root, models_dir
 from app.settings import load_settings, save_settings
 from app import translate_service
@@ -100,7 +99,6 @@ class AppController(QObject):
 
         self._listener = None
         self._capturing = False
-        self._editors = []
         self._start_hotkey()
         self._start_model_preload()
 
@@ -161,12 +159,8 @@ class AppController(QObject):
             return
         self._capturing = True
         try:
-            img = select_region()
-            if img is not None:
-                # 每次打开编辑器前刷新设置（保持会话内联网勾选）
-                win = EditorWindow(img, self.settings, model_hub=self.model_hub)
-                win.show()
-                self._editors.append(win)
+            # 框选后选区固定，工具条在选区外；确认则已复制到剪贴板
+            select_region(self.settings, model_hub=self.model_hub)
         finally:
             self._capturing = False
 

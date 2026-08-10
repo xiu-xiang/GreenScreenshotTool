@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSplitter,
     QTextEdit,
     QToolBar,
@@ -126,8 +127,12 @@ class Canvas(QWidget):
         self._start = QPoint()
         self._cur = QPoint()
         self._pen_pts: List[tuple] = []
-        self.setMinimumSize(self.base.width, self.base.height)
+        # 画布尺寸严格等于截图，避免周围留出空白背景
+        w, h = self.base.size
+        self.setFixedSize(w, h)
         self.setMouseTracking(True)
+        self.setAutoFillBackground(False)
+        self.setStyleSheet("background: transparent;")
 
     def sizeHint(self):
         from PySide6.QtCore import QSize
@@ -135,8 +140,10 @@ class Canvas(QWidget):
         return QSize(self.base.width, self.base.height)
 
     def paintEvent(self, _e):
+        # 只绘制截图像素，不填充控件背景
         pix = _pil_to_pixmap(self._compose_preview())
         p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
         p.drawPixmap(0, 0, pix)
 
     def _compose_preview(self) -> Image.Image:
@@ -270,49 +277,88 @@ class EditorWindow(QMainWindow):
         super().__init__()
         self.settings = settings
         self.model_hub = model_hub
-        self.setWindowTitle("截图编辑 - 绿色便携版（默认离线）")
-        self.resize(settings.window_width, settings.window_height)
+        self.setWindowTitle("截图编辑")
+        # 主页面以截图为唯一视觉主体，去掉多余灰色背景感
+        self.setStyleSheet(
+            """
+            QMainWindow { background: #111111; }
+            QToolBar { background: #1a1a1a; border: none; spacing: 4px; padding: 4px; }
+            QToolBar QToolButton { color: #e8e8e8; padding: 4px 8px; }
+            QSplitter::handle { background: #2a2a2a; width: 2px; }
+            QScrollArea { background: #111111; border: none; }
+            QLabel#shotHint { color: #888888; font-size: 11px; }
+            """
+        )
 
         self.canvas = Canvas(image)
+
+        # 左侧：只承载截图（可滚动，无额外装饰背景）
+        self.shot_host = QWidget()
+        self.shot_host.setStyleSheet("background:#111111;")
+        shot_layout = QVBoxLayout(self.shot_host)
+        shot_layout.setContentsMargins(0, 0, 0, 0)
+        shot_layout.setSpacing(0)
+        shot_layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        shot_layout.addWidget(self.canvas, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(False)
+        self.scroll.setWidget(self.shot_host)
+        self.scroll.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+
         self.result = QTextEdit()
         self.result.setReadOnly(True)
         self.result.setStyleSheet(
-            "QTextEdit{background:#1e1e1e;color:#e6e6e6;font-family:Consolas,'Cascadia Mono';font-size:12px;}"
+            "QTextEdit{background:#161616;color:#e6e6e6;border:none;"
+            "font-family:Consolas,'Cascadia Mono';font-size:12px;}"
         )
         self.result.setPlaceholderText("提取/翻译结果将显示在这里，可自由划选复制")
 
-        self.status = QLabel("就绪 · 本次启动：离线本机模式")
-        self.chk_online = QCheckBox("本次使用联网翻译（默认关闭/离线）")
-        self.chk_online.setChecked(False)  # 启动默认离线
+        self.status = QLabel("就绪 · 离线本机")
+        self.status.setStyleSheet("color:#aaaaaa;padding:2px 4px;")
+        self.chk_online = QCheckBox("本次联网翻译")
+        self.chk_online.setChecked(False)
+        self.chk_online.setStyleSheet("color:#cccccc;")
         self.chk_online.setToolTip("仅影响本次运行；下次启动仍默认离线")
         self.chk_online.toggled.connect(self._on_online_toggled)
 
-        right = QWidget()
-        rv = QVBoxLayout(right)
+        self.right = QWidget()
+        self.right.setMinimumWidth(280)
+        self.right.setMaximumWidth(480)
+        self.right.setStyleSheet("background:#141414;")
+        rv = QVBoxLayout(self.right)
+        rv.setContentsMargins(8, 8, 8, 8)
         head = QHBoxLayout()
         self.lbl_title = QLabel("结果")
+        self.lbl_title.setStyleSheet("color:#e6e6e6;font-weight:600;")
         head.addWidget(self.lbl_title)
         head.addStretch(1)
         btn_copy = QPushButton("复制选中")
         btn_copy.clicked.connect(self.copy_selected)
         btn_all = QPushButton("复制全部")
         btn_all.clicked.connect(self.copy_all)
-        head.addWidget(btn_copy)
-        head.addWidget(btn_all)
+        for b in (btn_copy, btn_all):
+            b.setStyleSheet(
+                "QPushButton{background:#2a2a2a;color:#ddd;border:1px solid #3a3a3a;padding:4px 8px;}"
+                "QPushButton:hover{background:#333;}"
+            )
+            head.addWidget(b)
         rv.addLayout(head)
         rv.addWidget(self.chk_online)
         rv.addWidget(self.result, 1)
         rv.addWidget(self.status)
 
-        split = QSplitter()
-        host = QWidget()
-        hl = QVBoxLayout(host)
-        hl.setContentsMargins(0, 0, 0, 0)
-        hl.addWidget(self.canvas)
-        split.addWidget(host)
-        split.addWidget(right)
-        split.setSizes([700, 360])
-        self.setCentralWidget(split)
+        self.split = QSplitter()
+        self.split.addWidget(self.scroll)
+        self.split.addWidget(self.right)
+        self.split.setStretchFactor(0, 1)
+        self.split.setStretchFactor(1, 0)
+        # 主页面默认只显示截图，翻译结果侧栏按需展开
+        self.right.hide()
+        self.setCentralWidget(self.split)
 
         self._plain = ""
         self._worker: Optional[Worker] = None
@@ -320,7 +366,39 @@ class EditorWindow(QMainWindow):
         self._pending_translate = False
         self._build_toolbar()
         self._bind_model_hub()
-        self._refresh_model_panel()
+        self._fit_window_to_shot()
+        # 模型状态只写在状态栏，避免右侧占位文案干扰「只看截图」
+        self._refresh_model_panel(quiet=True)
+
+    def _fit_window_to_shot(self):
+        """窗口尽量贴合截图尺寸，突出截图本身。"""
+        screen = QApplication.primaryScreen()
+        avail = screen.availableGeometry() if screen else None
+        img_w, img_h = self.canvas.base.size
+        tb_h = 40
+        # 预留少量边框，避免贴边难拖拽
+        pad = 8
+        win_w = img_w + pad * 2
+        win_h = img_h + tb_h + pad * 2
+        if avail:
+            max_w = max(480, avail.width() - 40)
+            max_h = max(320, avail.height() - 60)
+            win_w = min(win_w, max_w)
+            win_h = min(win_h, max_h)
+            # 居中弹出
+            x = avail.x() + (avail.width() - win_w) // 2
+            y = avail.y() + (avail.height() - win_h) // 2
+            self.setGeometry(x, y, win_w, win_h)
+        else:
+            self.resize(win_w, win_h)
+
+    def _show_result_panel(self):
+        """需要看翻译/OCR 结果时再展开右侧栏。"""
+        if self.right.isHidden():
+            self.right.setVisible(True)
+            total = max(640, self.width())
+            side = min(360, max(280, total // 3))
+            self.split.setSizes([max(200, total - side), side])
 
     def _bind_model_hub(self):
         """订阅启动预加载进度，右侧栏实时提示。"""
@@ -329,11 +407,11 @@ class EditorWindow(QMainWindow):
         self.model_hub.progress.connect(self._on_model_progress)
         self.model_hub.ready.connect(self._on_model_ready)
 
-    def _refresh_model_panel(self):
-        """根据当前模型状态刷新右侧提示与按钮。"""
+    def _refresh_model_panel(self, quiet: bool = False):
+        """根据当前模型状态刷新提示；quiet 时不往结果区灌占位文案。"""
         online = self.chk_online.isChecked()
         if online:
-            self.status.setText("联网翻译已开启（不依赖本地模型）")
+            self.status.setText("联网翻译已开启")
             if self._act_translate:
                 self._act_translate.setEnabled(True)
             return
@@ -344,55 +422,53 @@ class EditorWindow(QMainWindow):
             self.lbl_title.setText("结果 · 模型已就绪")
             if self._act_translate:
                 self._act_translate.setEnabled(True)
-            # 仅在还没有业务结果时写提示
-            if not self._plain and not self.result.toPlainText().strip():
+            if quiet or self._plain:
+                return
+            if (not self.right.isHidden()) and not self.result.toPlainText().strip():
                 self.result.setTextColor(QColor("#4EC9B0"))
-                self.result.setPlainText("✓ 离线翻译模型已就绪\n\n截图标注后点击「对照翻译」即可。")
+                self.result.setPlainText("✓ 离线翻译模型已就绪\n\n点击「对照翻译」即可。")
             return
 
         msg = translate_service.get_model_status() or "正在加载离线翻译模型…"
         self.status.setText(msg)
         self.lbl_title.setText("结果 · 模型加载中")
         if self._act_translate:
-            # 允许点击：会排队等加载完成
             self._act_translate.setEnabled(True)
-        if not self._plain:
-            self.result.setTextColor(QColor("#DCDCAA"))
-            self.result.setPlainText(
-                "⏳ 正在加载离线翻译模型…\n\n"
-                "启动后会在后台预热英↔中模型，完成后会提示「已就绪」。\n"
-                "加载完成前也可点「对照翻译」，会自动等待。\n\n"
-                f"当前：{msg}"
-            )
+        if quiet or self._plain or self.right.isHidden():
+            return
+        self.result.setTextColor(QColor("#DCDCAA"))
+        self.result.setPlainText(
+            "⏳ 正在加载离线翻译模型…\n\n"
+            f"当前：{msg}"
+        )
 
     def _on_model_progress(self, msg: str):
         if self.chk_online.isChecked():
             return
         self.status.setText(msg)
-        # 加载过程中持续刷新右侧说明
-        if not self._plain:
-            self.result.setTextColor(QColor("#DCDCAA"))
-            self.result.setPlainText(
-                "⏳ 正在加载离线翻译模型…\n\n"
-                "请稍候，加载完成后即可使用对照翻译。\n\n"
-                f"当前：{msg}"
-            )
+        if self._plain or self.right.isHidden():
+            return
+        self.result.setTextColor(QColor("#DCDCAA"))
+        self.result.setPlainText(
+            "⏳ 正在加载离线翻译模型…\n\n"
+            f"当前：{msg}"
+        )
 
     def _on_model_ready(self, ok: bool, msg: str):
         if self.chk_online.isChecked():
             return
-        self._refresh_model_panel()
+        self._refresh_model_panel(quiet=self.right.isHidden())
         if ok:
             self.status.setText("离线翻译模型已就绪，可以使用对照翻译")
-            if not self._plain:
+            if (not self.right.isHidden()) and not self._plain:
                 self.result.setTextColor(QColor("#4EC9B0"))
-                self.result.setPlainText("✓ 离线翻译模型已就绪\n\n截图标注后点击「对照翻译」即可。")
-            # 若用户已点过对照翻译，自动继续
+                self.result.setPlainText("✓ 离线翻译模型已就绪\n\n点击「对照翻译」即可。")
             if self._pending_translate:
                 self._pending_translate = False
                 self._start_worker(True)
         else:
             self.status.setText(f"模型加载失败：{msg}")
+            self._show_result_panel()
             if not self._plain:
                 self.result.setTextColor(QColor("#F44747"))
                 self.result.setPlainText(f"✗ 离线翻译模型加载失败\n\n{msg}")
@@ -401,9 +477,10 @@ class EditorWindow(QMainWindow):
     def _on_online_toggled(self, checked: bool):
         self.settings.use_online = bool(checked)
         save_settings(self.settings)
-        mode = "联网" if self.settings.use_online else "离线本机"
-        self.status.setText(f"已切换：{mode}（下次启动仍默认离线）")
-        self._refresh_model_panel()
+        mode = "联网" if checked else "离线本机"
+        self.status.setText(f"已切换：{mode}")
+        # 只更新状态文字，不强制打开侧栏
+        self._refresh_model_panel(quiet=True)
 
     def _build_toolbar(self):
         tb = QToolBar()
@@ -464,6 +541,8 @@ class EditorWindow(QMainWindow):
             return
         use_online = self.chk_online.isChecked()
         self.settings.use_online = use_online
+        # 点提取/翻译时才展开结果侧栏，主页面仍以截图为主
+        self._show_result_panel()
 
         # 离线对照翻译：模型未就绪时先提示并排队等待
         if do_translate and not use_online and not translate_service.is_model_ready():
@@ -476,7 +555,6 @@ class EditorWindow(QMainWindow):
                 "加载完成后将自动开始对照翻译。\n\n"
                 f"当前：{msg}"
             )
-            # 若当前没有后台加载（异常路径），主动触发一次
             if not translate_service.is_model_loading():
                 self._kick_preload()
             return
