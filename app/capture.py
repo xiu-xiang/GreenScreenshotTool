@@ -6,8 +6,8 @@ from typing import Optional, Tuple
 
 import mss
 from PIL import Image
-from PySide6.QtCore import QByteArray, QEvent, QEventLoop, QPoint, QRect, Qt, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
+from PySide6.QtCore import QByteArray, QEvent, QEventLoop, QMimeData, QPoint, QRect, Qt, Signal
+from PySide6.QtGui import QColor, QImage, QPainter, QPalette, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -21,7 +21,17 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtCore import QMimeData
+
+
+def _force_solid_bg(widget: QWidget, color: str) -> None:
+    """强制不透明背景，避免截图底色透出导致看不清。"""
+    widget.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+    widget.setAutoFillBackground(True)
+    pal = widget.palette()
+    c = QColor(color)
+    pal.setColor(QPalette.ColorRole.Window, c)
+    pal.setColor(QPalette.ColorRole.Base, c)
+    widget.setPalette(pal)
 
 from app.editor import Canvas, Tool, Worker
 from app.settings import AppSettings, save_settings
@@ -68,8 +78,8 @@ class ShotCanvas(Canvas):
 
     def mouseDoubleClickEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
-            # 取消双击过程中可能产生的短拖拽标注
             self._drawing = False
+            self._dragging_text = False
             self.double_clicked.emit()
             e.accept()
             return
@@ -107,30 +117,33 @@ class FloatingBar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         # 不做独立 Tool 窗口，始终挂在全屏遮罩上
+        self.setObjectName("floatBar")
+        _force_solid_bg(self, "#2d2d30")
         self.setStyleSheet(
             """
             QWidget#floatBar {
-                background: #2b2b2b;
-                border: 1px solid #3f3f3f;
+                background-color: #2d2d30;
+                border: 1px solid #5a5a5a;
                 border-radius: 6px;
             }
             QPushButton {
-                background: transparent;
-                color: #eaeaea;
-                border: none;
+                background-color: #3a3a3e;
+                color: #f0f0f0;
+                border: 1px solid #4a4a4e;
+                border-radius: 4px;
                 padding: 6px 8px;
                 min-width: 36px;
             }
-            QPushButton:hover { background: #3a3a3a; border-radius: 4px; }
-            QPushButton:checked { background: #0078d4; border-radius: 4px; }
-            QPushButton#okBtn { color: #4EC9B0; font-weight: 700; }
-            QPushButton#cancelBtn { color: #F44747; font-weight: 700; }
+            QPushButton:hover { background-color: #4a4a50; }
+            QPushButton:checked { background-color: #0078d4; border-color: #2890e0; }
+            QPushButton#okBtn { color: #4EC9B0; font-weight: 700; background-color: #243028; }
+            QPushButton#cancelBtn { color: #F44747; font-weight: 700; background-color: #3a2424; }
+            QLabel { color: #888; background: transparent; }
             """
         )
-        self.setObjectName("floatBar")
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(6, 4, 6, 4)
-        lay.setSpacing(2)
+        lay.setContentsMargins(8, 6, 8, 6)
+        lay.setSpacing(3)
 
         self._tool_btns = []
         tools = [
@@ -194,6 +207,15 @@ class FloatingBar(QWidget):
         self._pick_tool(Tool.RECT)
         self.adjustSize()
 
+    def paintEvent(self, event):
+        # 实心底 + 边框，防止截图亮色区域透出
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setBrush(QColor("#2d2d30"))
+        p.setPen(QPen(QColor("#6a6a6e"), 1))
+        p.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 6, 6)
+        super().paintEvent(event)
+
     def _pick_tool(self, tool: Tool):
         for b, t in self._tool_btns:
             b.setChecked(t == tool)
@@ -205,16 +227,35 @@ class ResultFloat(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("resultFloat")
+        _force_solid_bg(self, "#1e1e22")
         self.setStyleSheet(
             """
-            QWidget#resultFloat { background:#1a1a1a; border:1px solid #3a3a3a; border-radius:6px; }
-            QLabel { color:#ddd; }
-            QTextEdit { background:#121212; color:#e6e6e6; border:1px solid #2a2a2a; }
-            QPushButton { background:#2a2a2a; color:#ddd; border:1px solid #3a3a3a; padding:4px 8px; }
-            QCheckBox { color:#ccc; }
+            QWidget#resultFloat {
+                background-color: #1e1e22;
+                border: 1px solid #5a5a60;
+                border-radius: 6px;
+            }
+            QLabel { color:#ececec; background: transparent; }
+            QTextEdit {
+                background-color: #141418;
+                color: #f0f0f0;
+                border: 1px solid #3a3a40;
+                border-radius: 4px;
+                selection-background-color: #264f78;
+            }
+            QPushButton {
+                background-color: #333338;
+                color: #f0f0f0;
+                border: 1px solid #4a4a50;
+                border-radius: 4px;
+                padding: 4px 10px;
+            }
+            QPushButton:hover { background-color: #424248; }
+            QCheckBox { color:#ddd; background: transparent; spacing: 6px; }
+            QCheckBox::indicator { width: 14px; height: 14px; }
             """
         )
-        self.setObjectName("resultFloat")
         self.setFixedWidth(340)
         self.setMinimumHeight(220)
 
@@ -237,12 +278,22 @@ class ResultFloat(QWidget):
 
         self.text = QTextEdit()
         self.text.setReadOnly(True)
+        _force_solid_bg(self.text, "#141418")
         lay.addWidget(self.text, 1)
 
         self.status = QLabel("")
-        self.status.setStyleSheet("color:#999;")
+        self.status.setStyleSheet("color:#aaaaaa; background: transparent;")
         lay.addWidget(self.status)
         self._plain = ""
+
+    def paintEvent(self, event):
+        # 对照翻译侧栏实心背景，避免被桌面/截图底色干扰
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setBrush(QColor("#1e1e22"))
+        p.setPen(QPen(QColor("#6a6a70"), 1))
+        p.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 6, 6)
+        super().paintEvent(event)
 
     def _copy_all(self):
         t = self._plain or self.text.toPlainText()
@@ -298,6 +349,9 @@ class CaptureOverlay(QWidget):
         self._loop: Optional[QEventLoop] = None
         self._worker: Optional[Worker] = None
         self._closing = False
+        # 通过标题条/边框拖动整个截图选区
+        self._moving_sel = False
+        self._move_last = QPoint()
 
         self.canvas: Optional[ShotCanvas] = None
         # 关键：作为子控件，避免独立 Tool 窗在点击画布后被系统关掉
@@ -389,27 +443,20 @@ class CaptureOverlay(QWidget):
             p.setPen(QPen(QColor(0, 200, 80), 2))
             p.drawRect(r.adjusted(0, 0, -1, -1))
             tip = f"{r.width()} × {r.height()}"
-            tip_y = max(0, r.top() - 22)
-            p.fillRect(r.left(), tip_y, 100, 20, QColor(0, 0, 0, 200))
+            tip_r = self._tip_rect() if self._phase == "edit" else QRect(r.left(), max(0, r.top() - 26), 120, 26)
+            p.fillRect(tip_r, QColor(0, 0, 0, 200))
             p.setPen(QColor("white"))
-            p.drawText(r.left() + 6, tip_y + 14, tip)
+            p.drawText(tip_r.left() + 6, tip_r.top() + 17, tip)
 
-        if self._phase == "select":
-            p.fillRect(0, self.height() - 28, self.width(), 28, QColor(0, 0, 0, 150))
-            p.setPen(QColor(230, 230, 230))
-            p.drawText(
-                16,
-                self.height() - 9,
-                "拖拽选择 · 松手后选区外用工具 · 双击选区=PNG进剪贴板并退出 · Esc取消",
-            )
-        elif self._phase == "edit":
-            p.fillRect(0, self.height() - 28, self.width(), 28, QColor(0, 0, 0, 150))
-            p.setPen(QColor(230, 230, 230))
-            p.drawText(
-                16,
-                self.height() - 9,
-                "双击截图区域：复制 PNG 到剪贴板并退出 · Esc/✕ 退出 · ✓ 完成",
-            )
+        # 底部提示条用不透明底，避免亮色桌面干扰阅读
+        if self._phase in ("select", "edit"):
+            p.fillRect(0, self.height() - 30, self.width(), 30, QColor(30, 30, 34, 235))
+            p.setPen(QColor(240, 240, 240))
+            if self._phase == "select":
+                tip = "拖拽选择 · 松手后选区外用工具 · 双击选区=PNG进剪贴板并退出 · Esc取消"
+            else:
+                tip = "拖尺寸条/绿色边框可移动截图 · 点住文字可拖动 · 双击=PNG进剪贴板并退出 · Esc取消"
+            p.drawText(16, self.height() - 10, tip)
 
     def _current_rect(self) -> QRect:
         if self._phase == "edit" and self._sel.isValid():
@@ -418,10 +465,57 @@ class CaptureOverlay(QWidget):
             return QRect(self._start, self._end).normalized()
         return QRect()
 
+    def _tip_rect(self) -> QRect:
+        """选区上方尺寸条热区（加宽便于拖动）。"""
+        r = self._sel
+        if not r.isValid():
+            return QRect()
+        return QRect(r.left(), max(0, r.top() - 26), max(120, min(r.width(), 200)), 26)
+
+    def _border_hit(self, pos: QPoint) -> bool:
+        """点在选区标题条或绿色边框外围 → 可拖动整块截图。"""
+        if not self._sel.isValid():
+            return False
+        if self._tip_rect().contains(pos):
+            return True
+        # 绿色边框外围一圈（不进入选区内部，避免与标注冲突）
+        outer = self._sel.adjusted(-14, -14, 14, 14)
+        return outer.contains(pos) and not self._sel.contains(pos)
+
+    def _nudge_sel(self, dx: int, dy: int):
+        """平移选区与画布，内容不变，工具条跟随。"""
+        if not self._sel.isValid() or not self.canvas:
+            return
+        nr = self._sel.translated(dx, dy)
+        # 限制在屏幕内
+        if nr.left() < 0:
+            nr.moveLeft(0)
+        if nr.top() < 0:
+            nr.moveTop(0)
+        if nr.right() > self.width() - 1:
+            nr.moveRight(self.width() - 1)
+        if nr.bottom() > self.height() - 1:
+            nr.moveBottom(self.height() - 1)
+        self._sel = nr
+        self.canvas.setGeometry(self._sel)
+        self._place_bar()
+        if not self.result_panel.isHidden():
+            self._place_result()
+        self.update()
+        self._keep_chrome()
+
     def mousePressEvent(self, e):
         if self._phase == "edit":
             if e.button() == Qt.MouseButton.RightButton:
                 self._cancel()
+                return
+            if e.button() == Qt.MouseButton.LeftButton:
+                pos = e.position().toPoint()
+                if self._border_hit(pos):
+                    self._moving_sel = True
+                    self._move_last = pos
+                    self.setCursor(Qt.CursorShape.SizeAllCursor)
+                    return
             return
         if e.button() == Qt.MouseButton.LeftButton:
             self._start = e.position().toPoint()
@@ -431,14 +525,29 @@ class CaptureOverlay(QWidget):
             self._cancel()
 
     def mouseMoveEvent(self, e):
+        pos = e.position().toPoint()
         if self._phase == "edit":
+            if self._moving_sel:
+                dx = pos.x() - self._move_last.x()
+                dy = pos.y() - self._move_last.y()
+                self._move_last = pos
+                self._nudge_sel(dx, dy)
+                return
+            # 悬停边框提示可拖动
+            if self._border_hit(pos):
+                self.setCursor(Qt.CursorShape.SizeAllCursor)
+            else:
+                self.setCursor(Qt.CursorShape.ArrowCursor)
             return
         if self._start is not None:
-            self._end = e.position().toPoint()
+            self._end = pos
             self.update()
 
     def mouseReleaseEvent(self, e):
         if self._phase == "edit":
+            if self._moving_sel and e.button() == Qt.MouseButton.LeftButton:
+                self._moving_sel = False
+                self.setCursor(Qt.CursorShape.ArrowCursor)
             return
         if e.button() == Qt.MouseButton.LeftButton and self._start and self._end:
             r = QRect(self._start, self._end).normalized()
@@ -535,11 +644,11 @@ class CaptureOverlay(QWidget):
     def _on_tool(self, tool: Tool):
         if self.canvas:
             self.canvas.tool = tool
-            self.canvas.setCursor(
-                Qt.CursorShape.IBeamCursor if tool == Tool.TEXT else Qt.CursorShape.CrossCursor
-            )
+            if tool == Tool.TEXT:
+                self.canvas.setCursor(Qt.CursorShape.IBeamCursor)
+            else:
+                self.canvas.setCursor(Qt.CursorShape.CrossCursor)
         self._keep_chrome()
-
     def _on_color(self):
         if not self.canvas:
             return

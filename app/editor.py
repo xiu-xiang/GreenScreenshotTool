@@ -6,8 +6,8 @@ from enum import Enum, auto
 from typing import List, Optional
 
 from PIL import Image, ImageDraw, ImageFont
-from PySide6.QtCore import QPoint, Qt, QThread, Signal
-from PySide6.QtGui import QAction, QColor, QImage, QPainter, QPixmap
+from PySide6.QtCore import QPoint, QRect, Qt, QThread, Signal
+from PySide6.QtGui import QAction, QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -127,6 +127,10 @@ class Canvas(QWidget):
         self._start = QPoint()
         self._cur = QPoint()
         self._pen_pts: List[tuple] = []
+        # 文字拖动
+        self._dragging_text = False
+        self._drag_text_i = -1
+        self._drag_text_off = (0, 0)
         # 画布尺寸严格等于截图，避免周围留出空白背景
         w, h = self.base.size
         self.setFixedSize(w, h)
@@ -145,6 +149,36 @@ class Canvas(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
         p.drawPixmap(0, 0, pix)
+        # 拖动中的文字加虚线框提示
+        if self._dragging_text and 0 <= self._drag_text_i < len(self.shapes):
+            s = self.shapes[self._drag_text_i]
+            br = self._text_bbox(s)
+            p.setPen(QPen(QColor(0, 174, 255), 1, Qt.PenStyle.DashLine))
+            p.drawRect(br)
+
+    def _text_font(self):
+        try:
+            return ImageFont.truetype("msyh.ttc", 18)
+        except Exception:
+            return ImageFont.load_default()
+
+    def _text_bbox(self, s: Shape) -> QRect:
+        """估算文字点击/拖动热区。"""
+        font = self._text_font()
+        try:
+            bbox = font.getbbox(s.text or " ")
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        except Exception:
+            tw, th = max(12, len(s.text or "") * 10), 20
+        x, y = int(s.p1[0]), int(s.p1[1])
+        return QRect(x - 2, y - 2, max(tw + 8, 16), max(th + 8, 18))
+
+    def _hit_text_index(self, pos: QPoint) -> int:
+        for i in range(len(self.shapes) - 1, -1, -1):
+            s = self.shapes[i]
+            if s.tool == Tool.TEXT and s.text and self._text_bbox(s).contains(pos):
+                return i
+        return -1
 
     def _compose_preview(self) -> Image.Image:
         img = self.base.copy()
@@ -187,11 +221,7 @@ class Canvas(QWidget):
             if len(s.points) >= 2:
                 draw.line(s.points, fill=c, width=w, joint="curve")
         elif s.tool == Tool.TEXT and s.text:
-            try:
-                font = ImageFont.truetype("msyh.ttc", 18)
-            except Exception:
-                font = ImageFont.load_default()
-            draw.text(s.p1, s.text, fill=c, font=font)
+            draw.text(s.p1, s.text, fill=c, font=self._text_font())
         elif s.tool == Tool.MOSAIC:
             self._mosaic(img, box)
 
@@ -219,30 +249,75 @@ class Canvas(QWidget):
         img.paste(region, (x1, y1))
 
     def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.RightButton:
+            # 子类可覆盖；基类忽略
+            return
         if e.button() != Qt.MouseButton.LeftButton:
             return
+        pos = e.position().toPoint()
+
+        # 优先：点中已有文字 → 拖动文字
+        hit = self._hit_text_index(pos)
+        if hit >= 0:
+            self._dragging_text = True
+            self._drag_text_i = hit
+            s = self.shapes[hit]
+            self._drag_text_off = (pos.x() - int(s.p1[0]), pos.y() - int(s.p1[1]))
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
+            self.update()
+            return
+
         if self.tool == Tool.TEXT:
             text, ok = QInputDialog.getText(self, "输入文字", "文字内容：")
             if ok and text.strip():
-                pt = (e.position().toPoint().x(), e.position().toPoint().y())
+                pt = (pos.x(), pos.y())
                 self.shapes.append(Shape(Tool.TEXT, self.color, self.pen_w, pt, pt, text=text.strip()))
                 self.redo_stack.clear()
                 self.update()
             return
+
         self._drawing = True
-        self._start = e.position().toPoint()
+        self._start = pos
         self._cur = self._start
         self._pen_pts = [(self._start.x(), self._start.y())]
 
     def mouseMoveEvent(self, e):
+        pos = e.position().toPoint()
+
+        if self._dragging_text and 0 <= self._drag_text_i < len(self.shapes):
+            s = self.shapes[self._drag_text_i]
+            nx = pos.x() - self._drag_text_off[0]
+            ny = pos.y() - self._drag_text_off[1]
+            # 限制在画布内
+            br = self._text_bbox(s)
+            nx = max(0, min(nx, self.width() - max(8, br.width())))
+            ny = max(0, min(ny, self.height() - max(8, br.height())))
+            s.p1 = (nx, ny)
+            s.p2 = (nx, ny)
+            self.update()
+            return
+
+        # 悬停文字时显示可拖动光标
+        if not self._drawing and self._hit_text_index(pos) >= 0:
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
+        elif self.tool == Tool.TEXT:
+            self.setCursor(Qt.CursorShape.IBeamCursor)
+        else:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+
         if not self._drawing:
             return
-        self._cur = e.position().toPoint()
+        self._cur = pos
         if self.tool == Tool.PEN:
             self._pen_pts.append((self._cur.x(), self._cur.y()))
         self.update()
 
     def mouseReleaseEvent(self, e):
+        if self._dragging_text:
+            self._dragging_text = False
+            self._drag_text_i = -1
+            self.update()
+            return
         if not self._drawing:
             return
         self._drawing = False
