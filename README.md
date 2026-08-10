@@ -37,32 +37,31 @@ py -3.11 -m venv .venv
 .\scripts\build_portable.ps1
 ```
 
-输出：`dist\ShotPortable-Green\`（同时会同步到 `dist\ShotPortable\`）。
+输出：`dist\ShotPortable-Green\`（同时整理 `dist\ShotPortable\`）。
 
-把**整个文件夹**拷到目标电脑，运行 `ShotPortable.exe`（无需安装 Python / Docker）。目录结构要点：
+把**整个文件夹**拷到目标电脑，运行 `ShotPortable.exe`（无需安装 Python / Docker）。精简后发布包约 **1GB 内**，目录要点：
 
 ```
 ShotPortable.exe
-models\
-  argos\*.argosmodel
-  argos_installed\...
-_internal\
+使用说明.txt
+models\argos_installed\...
+_internal\...
 ```
 
 构建脚本会自动：
 
 1. 确保离线模型已下载
-2. PyInstaller 打包
-3. 把 `models` 放到 exe 同级
-4. 覆盖离线分句模块（避免 Stanza/MiniSBD 联网）
-5. 禁止 ctranslate2 导入 torch（避免首次翻译假死）
+2. PyInstaller 打包（排除 torch/spacy/stanza）
+3. 只拷贝运行时 `argos_installed`（不带 `.argosmodel` 与 cache）
+4. 覆盖离线分句模块；禁止 ctranslate2 导入 torch
+5. 再剔除误打进包的 torch/spacy 等膨胀目录
 
 ## 离线翻译说明
 
 - 模型不进 Git，请用 `scripts\download_models.py` 下载后再发布
 - 启动即后台预热英↔中模型；未就绪时点「对照翻译」会等待加载完成后自动开始
 - 分句使用本地正则，不依赖 Stanza / MiniSBD 网络下载
-- 若提示缺少模型：把完整 `models` 文件夹放到与 exe 同级
+- 若提示缺少模型：把 `models\argos_installed` 放到与 exe 同级
 
 ## 详细说明
 

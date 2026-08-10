@@ -204,12 +204,12 @@ def ensure_offline_packages(progress=None) -> Tuple[bool, str]:
         if is_frozen():
             tip = (
                 "缺少离线翻译模型。\n"
-                f"请把完整 models 文件夹复制到：\n{app_root()}\n"
+                f"请把 models\\argos_installed 放到：\n{app_root()}\n"
                 "即与 ShotPortable.exe 同级，目录结构：\n"
                 "  ShotPortable.exe\n"
-                "  models\\argos\\*.argosmodel\n"
-                "  models\\argos_installed\\...\n"
-                "开发机可先运行：python scripts\\download_models.py"
+                "  models\\argos_installed\\translate-en_zh-*\n"
+                "  models\\argos_installed\\translate-zh_en-*\n"
+                "开发机可先运行：python scripts\\download_models.py 后重新打包"
             )
         else:
             tip = (

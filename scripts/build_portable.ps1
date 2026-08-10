@@ -13,11 +13,11 @@ if (-not (Test-Path $Py)) {
     exit 1
 }
 
-Write-Host "[1/3] Ensure offline models exist..." -ForegroundColor Cyan
+Write-Host "[1/4] Ensure offline models exist..." -ForegroundColor Cyan
 & $Py (Join-Path $PSScriptRoot "download_models.py")
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Write-Host "[2/3] PyInstaller pack..." -ForegroundColor Cyan
+Write-Host "[2/4] PyInstaller pack..." -ForegroundColor Cyan
 & $Py -m PyInstaller --noconfirm --clean --windowed --name ShotPortable `
   --paths $Root `
   --distpath $Dist `
@@ -27,13 +27,20 @@ Write-Host "[2/3] PyInstaller pack..." -ForegroundColor Cyan
   --collect-all onnxruntime `
   --collect-all argostranslate `
   --collect-all ctranslate2 `
+  --exclude-module torch `
+  --exclude-module torchvision `
+  --exclude-module torchaudio `
+  --exclude-module spacy `
+  --exclude-module stanza `
+  --exclude-module thinc `
+  --exclude-module blis `
   --hidden-import pynput.keyboard._win32 `
   --hidden-import pynput.mouse._win32 `
   --hidden-import pystray._win32 `
   (Join-Path $Root "run.py")
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Write-Host "[3/3] Assemble green folder..." -ForegroundColor Cyan
+Write-Host "[3/4] Assemble green folder..." -ForegroundColor Cyan
 $built = Join-Path $Dist "ShotPortable"
 if (-not (Test-Path $built)) {
     Write-Host ("Build output missing: {0}" -f $built) -ForegroundColor Red
@@ -44,22 +51,54 @@ if (Test-Path $Out) { Remove-Item $Out -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 Copy-Item (Join-Path $built "*") $Out -Recurse -Force
 
-# 关键：models 必须与 exe 同级，否则离线翻译找不到包
-$modelsSrc = Join-Path $Root "models"
-$modelsDst = Join-Path $Out "models"
-if (-not (Test-Path (Join-Path $modelsSrc "argos"))) {
-    Write-Host "models/argos missing. Run download_models.py first." -ForegroundColor Red
+# 关键：只发布已安装模型，不带 .argosmodel / cache（体积更小）
+$modelsSrcInstalled = Join-Path $Root "models\argos_installed"
+if (-not (Test-Path $modelsSrcInstalled) -or -not (Get-ChildItem $modelsSrcInstalled -Directory -ErrorAction SilentlyContinue)) {
+    Write-Host "models/argos_installed missing. Run download_models.py first." -ForegroundColor Red
     exit 1
 }
-if (Test-Path $modelsDst) { Remove-Item $modelsDst -Recurse -Force }
-Copy-Item $modelsSrc $modelsDst -Recurse -Force
-# 同步一份到 PyInstaller 输出目录，方便直接跑 dist\ShotPortable
-$builtModels = Join-Path $built "models"
-if (Test-Path $builtModels) { Remove-Item $builtModels -Recurse -Force }
-Copy-Item $modelsSrc $builtModels -Recurse -Force
-Write-Host "models copied beside exe" -ForegroundColor Green
 
-# 覆盖 Argos 分句模块：禁止 stanza/torch，避免对照翻译卡住
+function Copy-RuntimeModels([string]$targetRoot) {
+    $dst = Join-Path $targetRoot "models"
+    if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $dst | Out-Null
+    Copy-Item $modelsSrcInstalled (Join-Path $dst "argos_installed") -Recurse -Force
+    # 删除包内 stanza（离线分句不用）
+    Get-ChildItem (Join-Path $dst "argos_installed") -Recurse -Directory -Filter "stanza" -ErrorAction SilentlyContinue |
+        ForEach-Object { Remove-Item $_.FullName -Recurse -Force }
+}
+
+Copy-RuntimeModels $Out
+Copy-RuntimeModels $built
+Write-Host "runtime models copied (argos_installed only)" -ForegroundColor Green
+
+function Remove-PublishBloat([string]$targetRoot) {
+    # 剔除误打进包的重依赖与缓存（翻译/OCR 运行时不需要）
+    $junk = @(
+        "torch", "torchvision", "torchaudio",
+        "spacy", "spacy_legacy", "spacy_loggers",
+        "stanza", "thinc", "blis", "srsly", "preshed", "cymem", "murmurhash",
+        "catalogue", "confection", "wasabi", "typer", "smart_open", "cloudpathlib",
+        "langcodes"
+    )
+    $internal = Join-Path $targetRoot "_internal"
+    foreach ($name in $junk) {
+        $p = Join-Path $internal $name
+        if (Test-Path $p) {
+            Remove-Item $p -Recurse -Force
+            Write-Host ("removed bloat: {0}" -f $name) -ForegroundColor DarkYellow
+        }
+        Get-ChildItem $internal -Directory -Filter ($name + "*") -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like ($name + "-*") -or $_.Name -eq $name } |
+            ForEach-Object { Remove-Item $_.FullName -Recurse -Force }
+    }
+    foreach ($extra in @("models\argos_cache", "models\argos_data", "models\argos")) {
+        $p = Join-Path $targetRoot $extra
+        if (Test-Path $p) { Remove-Item $p -Recurse -Force }
+    }
+}
+
+Write-Host "[4/4] Patch offline runtime + strip bloat..." -ForegroundColor Cyan
 $sbdSrc = Join-Path $PSScriptRoot "argos_sbd_offline.py"
 foreach ($targetRoot in @($Out, $built)) {
     $sbdDst = Join-Path $targetRoot "_internal\argostranslate\sbd.py"
@@ -67,7 +106,6 @@ foreach ($targetRoot in @($Out, $built)) {
         Copy-Item $sbdSrc $sbdDst -Force
         Write-Host ("patched offline sbd -> {0}" -f $sbdDst) -ForegroundColor Green
     }
-    # 禁止 ctranslate2 导入 torch（推理不需要，导入会假死）
     $spec = Join-Path $targetRoot "_internal\ctranslate2\specs\model_spec.py"
     if (Test-Path $spec) {
         $txt = Get-Content $spec -Raw -Encoding UTF8
@@ -87,13 +125,13 @@ torch = None
         if ($txt -like "*torch_is_available = True*") {
             $txt2 = $txt.Replace($old, $new)
             if ($txt2 -eq $txt) {
-                # 容错：按行粗替换
                 $txt2 = $txt -replace '(?s)try:\r?\n\s*import torch\r?\n\r?\n\s*torch_is_available = True\r?\nexcept ImportError:\r?\n\s*torch_is_available = False', $new.Trim()
             }
             Set-Content -Path $spec -Value $txt2 -Encoding UTF8
             Write-Host ("patched no-torch ctranslate2 -> {0}" -f $spec) -ForegroundColor Green
         }
     }
+    Remove-PublishBloat $targetRoot
 }
 
 $readme = Join-Path $Root "使用说明.txt"
@@ -105,7 +143,6 @@ if (Test-Path $icon) {
     Copy-Item $icon (Join-Path $Out "assets\app.ico") -Force
 }
 
-# Size summary
 $sizeGB = [math]::Round(((Get-ChildItem $Out -Recurse | Measure-Object -Property Length -Sum).Sum / 1GB), 2)
 Write-Host ""
 Write-Host ("Green package ready: {0}" -f $Out) -ForegroundColor Green
